@@ -6,15 +6,16 @@ from torch.utils.data import DataLoader
 from torchvision import transforms, datasets
 from torchvision.datasets import ImageFolder
 from PIL import Image
-import h5py
+#import h5py
 import numpy as np
 import collections
 import numbers
 import math
-import pandas as pd
+#import pandas as pd
 
 class MNISTImbalanced():
     def __init__(self, n_items = 5000, classes=[9, 4], proportion=0.9, n_val=5, random_seed=1, mode="train"):
+        self.proportion = proportion
         if mode == "train":
             self.mnist = datasets.MNIST('data',train=True, download=True)
         else:

@@ -93,9 +93,10 @@ class UCIAdult(data.Dataset):
                         dim=1)
 
 
-def adult(batch_size):
+def adult(batch_size, seed=None):
     use_cuda = torch.cuda.is_available()
-    torch.manual_seed(0)
+    if seed is not None:
+        torch.manual_seed(seed)
     device = torch.device("cuda" if use_cuda else "cpu")
 
     #kwargs = {'num_workers': 1, 'pin_memory': True} if use_cuda else {}

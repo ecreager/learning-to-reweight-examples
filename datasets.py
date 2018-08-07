@@ -92,8 +92,21 @@ class UCIAdult(data.Dataset):
                         (self.test_data, self.test_attr.type(torch.float32)[:, None]), 
                         dim=1)
 
+class UCIAdultGoldStd(UCIAdult):
+    """
+    like UCIAdult, except the training data is missing the sensitive attribute
+    
+    self.train_attr is still accessible but attr is omitted when iterated over
+    """
+    def __getitem__(self, index):
+        inp, attr, target = super(UCIAdultGoldStd, self).__getitem__(index)
+        if self.train:
+            return inp, torch.tensor(float('nan')), target
+        else:
+            return inp, attr, target
 
-def adult(batch_size, seed=None):
+
+def adult(batch_size, seed=None, gold_std=False):
     use_cuda = torch.cuda.is_available()
     if seed is not None:
         torch.manual_seed(seed)
@@ -101,16 +114,17 @@ def adult(batch_size, seed=None):
 
     #kwargs = {'num_workers': 1, 'pin_memory': True} if use_cuda else {}
     kwargs = {'num_workers': 0, 'pin_memory': True} if use_cuda else {}
+    dataset = UCIAdultGoldStd if gold_std else UCIAdult
 
     transform = None
     train_loader = torch.utils.data.DataLoader(
-            UCIAdult('./data', train=True, download=True, transform=transform, use_attr=False),  
+            dataset('./data', train=True, download=True, transform=transform, use_attr=False),  
             batch_size=batch_size, 
             shuffle=True, 
             **kwargs)
 
     test_loader = torch.utils.data.DataLoader(
-            UCIAdult('./data', train=False, download=True, transform=transform, use_attr=False),  
+            dataset('./data', train=False, download=True, transform=transform, use_attr=False),  
             batch_size=batch_size, 
             shuffle=True, 
             **kwargs)
@@ -118,15 +132,21 @@ def adult(batch_size, seed=None):
     return train_loader, test_loader
 
 if __name__ == '__main__':
-    train_loader, test_loader = adult(128)
+    GOLD_STD = True
 
-    for batch_idx, (x, a, y) in enumerate(train_loader):
-        if batch_idx > 10:
-            break
-        x, a, y = x.cuda(), a.cuda(), y.cuda()
-        print('x', x)
-        print('a', a)
-        print('y', y)
-        print('x a y shapes', x.shape, a.shape, y.shape)
+    train_loader, test_loader = adult(128, gold_std=GOLD_STD)
+    print('gold standard uci adult dataset' if GOLD_STD else 'uci adult dataset')
+
+    for loader in [train_loader, test_loader]:
+        print()
+        print('training data' if loader.dataset.train else 'test data')
+        for batch_idx, (x, a, y) in enumerate(loader):
+            if batch_idx >= 1:
+                break
+            x, a, y = x.cuda(), a.cuda(), y.cuda()
+            print('x', x)
+            print('a', a)
+            print('y', y)
+            print('x a y shapes', x.shape, a.shape, y.shape)
 
     print('done')

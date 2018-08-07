@@ -70,8 +70,6 @@ def train_baseline(p, repeat=0):
     plot_step = 100
     net_l = 0
     
-    loss_fn = torch.nn.BCEWithLogitsLoss()
-
     smoothing_alpha = 0.9
     accuracy_log = []
     for i in tqdm(range(hyperparameters['num_iterations'])):
@@ -82,7 +80,7 @@ def train_baseline(p, repeat=0):
         labels = to_var(labels, requires_grad=False)
 
         y = net(image)
-        loss = loss_fn(y, labels)
+        loss = F.binary_cross_entropy_with_logits(y, labels)
         
         opt.zero_grad()
         loss.backward()
@@ -148,8 +146,6 @@ def train_lre(p, repeat=0):
 
     dn = './plots'
 
-    loss_fn = torch.nn.BCEWithLogitsLoss()
-
     print('training LRE with dataset imbalance {}, repeat {}'.format(p, repeat))
 
     net, opt = build_model()
@@ -180,7 +176,7 @@ def train_lre(p, repeat=0):
 
         # Lines 4 - 5 initial forward pass to compute the initial weighted loss
         y_f_hat  = meta_net(image)
-        loss = loss_fn(y_f_hat, labels, reduce=False)
+        loss = F.binary_cross_entropy_with_logits(y_f_hat, labels, reduce=False)
         eps = to_var(torch.zeros(loss.size()))
         l_f_meta = torch.sum(loss * eps)
 
@@ -193,7 +189,7 @@ def train_lre(p, repeat=0):
         # Line 8 - 10 2nd forward pass and getting the gradients with respect to epsilon
         y_g_hat = meta_net(val_data)
 
-        l_g_meta = loss_fn(y_g_hat, val_labels)
+        l_g_meta = F.binary_cross_entropy_with_logits(y_g_hat, val_labels)
 
         grad_eps = torch.autograd.grad(l_g_meta, eps, only_inputs=True)[0]
         
@@ -209,7 +205,7 @@ def train_lre(p, repeat=0):
         # Lines 12 - 14 computing for the loss with the computed weights
         # and then perform a parameter update
         y_f_hat = net(image)
-        loss = loss_fn(y_f_hat, labels, reduce=False)
+        loss = F.binary_cross_entropy_with_logits(y_f_hat, labels, reduce=False)
         l_f = torch.sum(loss * w)
 
         opt.zero_grad()
@@ -239,8 +235,8 @@ def train_lre(p, repeat=0):
             accuracy_log.append(np.array([i,accuracy])[None])
 
 
-            fig, axes = plt.subplots(1, 2, figsize=(13,5))
-            ax1, ax2 = axes.ravel()
+    fig, axes = plt.subplots(1, 2, figsize=(13,5))
+    ax1, ax2 = axes.ravel()
 
     ax1.plot(meta_losses_clean, label='meta_losses_clean')
     ax1.plot(net_losses, label='net_losses')
@@ -269,7 +265,8 @@ if __name__ == '__main__':
     # To get an idea of how robust this method is with respect to the proportion of the dominant class, I varied the proportion from 0.9 to 0.995 and perform 5 runs for each. 
     accuracy_log = {fn.__name__: {} for fn in [train_baseline, train_lre]}
 
-    for train_fn in [train_baseline, train_lre]:
+    for train_fn in [train_lre]:
+    #for train_fn in [train_baseline, train_lre]:
         print('starting sweep with', train_fn.__name__)
         for prop in hyperparameters['proportions']:
             for k in range(hyperparameters['num_repeats']):

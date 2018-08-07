@@ -1,11 +1,4 @@
-
-# coding: utf-8
-
-# # Learning to Reweight Examples for Robust Deep Learning
-
-# In[1]:
-
-
+import json
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
@@ -24,33 +17,31 @@ hyperparameters = {
     'momentum' : 0.9,
     'batch_size' : 100,
     'num_iterations' : 8000,
+    'num_repeats': 5,
+    'proportions': [0.9,0.95, 0.98, 0.99, 0.995]
 }
 
+with open('./plots/sweep_params.json', 'w') as f:
+    json.dump(hyperparameters, f)
+
+
+
+# HOW TO LOAD JSON
+#with open('./sweep_params.json', 'r') as f:
+    #from pprint import pprint
+    #pprint(json.load(f))
+    
 
 # ### Dataset
 # Following the class imbalance experiment in the paper, we used numbers 9 and 4 of the MNIST dataset to form a highly imbalanced dataset where 9 is the dominating class. The test set on the other hand is balanced.
 
-data_loader = get_mnist_loader(hyperparameters['batch_size'], classes=[9, 4], proportion=0.995, mode="train")
-test_loader = get_mnist_loader(hyperparameters['batch_size'], classes=[9, 4], proportion=0.5, mode="test")
+test_loader = get_mnist_loader(hyperparameters['batch_size'], classes=[9, 4], proportion=0.5, mode="test")  # held-out test data for evaluating all models
 
 def to_var(x, requires_grad=True):
     if torch.cuda.is_available():
         x = x.cuda()
     return Variable(x, requires_grad=requires_grad)
 
-
-# #### Since the validation data is small (only 10 examples) there is no need to wrap it in a dataloader
-
-val_data = to_var(data_loader.dataset.data_val, requires_grad=False)
-val_labels = to_var(data_loader.dataset.labels_val, requires_grad=False)
-
-for i,(img, label) in enumerate(data_loader):
-    print(img.size(),label)
-    break
-
-for i,(img, label) in enumerate(test_loader):
-    print(img.size(),label)
-    break
 
 def build_model():
     net = LeNet(n_out=1)
@@ -67,13 +58,19 @@ def build_model():
 # ## Baseline Model
 # I trained a LeNet model for the MNIST data without weighting the loss as a baseline model for comparison.
 
-def train_baseline():
-    print('training baseline')
+def train_baseline(p, repeat=0):
+    print('training baseline, repeat', repeat)
+    data_loader = get_mnist_loader(hyperparameters['batch_size'], classes=[9, 4], proportion=p, mode="train")
+    val_data = to_var(data_loader.dataset.data_val, requires_grad=False)
+    val_labels = to_var(data_loader.dataset.labels_val, requires_grad=False)
+
     net, opt = build_model()
 
     net_losses = []
     plot_step = 100
     net_l = 0
+    
+    loss_fn = torch.nn.BCEWithLogitsLoss()
 
     smoothing_alpha = 0.9
     accuracy_log = []
@@ -85,13 +82,13 @@ def train_baseline():
         labels = to_var(labels, requires_grad=False)
 
         y = net(image)
-        cost = F.binary_cross_entropy_with_logits(y, labels)
+        loss = loss_fn(y, labels)
         
         opt.zero_grad()
-        cost.backward()
+        loss.backward()
         opt.step()
         
-        net_l = smoothing_alpha *net_l + (1 - smoothing_alpha)* cost.item()
+        net_l = smoothing_alpha *net_l + (1 - smoothing_alpha)* loss.item()
         net_losses.append(net_l/(1 - smoothing_alpha**(i+1)))
         
         if i % plot_step == 0:
@@ -127,16 +124,13 @@ def train_baseline():
     dn = './plots'
     if not os.path.exists(dn):
         os.makedirs(dn)
-    fn = '{}/baseline.pdf'.format(dn)
+    fn = '{}/baseline-p{}-i{}.pdf'.format(dn, p, repeat)  # filename for plotting results
     fig.savefig(fn)
     plt.close(fig)
-    print('done training baseline; see plot at ')
+    print('done training baesline with p {} repeat {}; see plot at '.format(p, repeat))
     print(fn)
+    return np.mean(acc_log[-6:-1, 1])
 
-
-
-# UNCOMMENT TO TRAIN THE BASELINE
-#print('baseline accuracy {}'.format(train_baseline()))
 
 # As expected, due to the heavily imbalanced training data, the network could not learn how to differentiate between 9 and 4.
 
@@ -147,19 +141,16 @@ def train_baseline():
 # 
 # 
 
-# In[9]:
-
-
-def train_lre(dl, repeat=0):  # dl is a data_loader from a call to get_mnist_loader
-    p = data_loader.dataset.proportion
-    val_data = to_var(dl.dataset.data_val, requires_grad=False)
-    val_labels = to_var(dl.dataset.labels_val, requires_grad=False)
+def train_lre(p, repeat=0):
+    data_loader = get_mnist_loader(hyperparameters['batch_size'], classes=[9, 4], proportion=prop, mode="train")
+    val_data = to_var(data_loader.dataset.data_val, requires_grad=False)
+    val_labels = to_var(data_loader.dataset.labels_val, requires_grad=False)
 
     dn = './plots'
-    fn = '{}/lre-p{}-i{}.pdf'.format(dn, p, repeat)  # filename for plotting results
 
+    loss_fn = torch.nn.BCEWithLogitsLoss()
 
-    print('training LRE with dataset imbalance {}'.format(p))
+    print('training LRE with dataset imbalance {}, repeat {}'.format(p, repeat))
 
     net, opt = build_model()
     
@@ -175,7 +166,7 @@ def train_lre(dl, repeat=0):  # dl is a data_loader from a call to get_mnist_loa
     for i in tqdm(range(hyperparameters['num_iterations'])):
         net.train()
         # Line 2 get batch of data
-        image, labels = next(iter(dl))
+        image, labels = next(iter(data_loader))
         # since validation data is small I just fixed them instead of building an iterator
         # initialize a dummy network for the meta learning of the weights
         meta_net = LeNet(n_out=1)
@@ -189,9 +180,9 @@ def train_lre(dl, repeat=0):  # dl is a data_loader from a call to get_mnist_loa
 
         # Lines 4 - 5 initial forward pass to compute the initial weighted loss
         y_f_hat  = meta_net(image)
-        cost = F.binary_cross_entropy_with_logits(y_f_hat,labels, reduce=False)
-        eps = to_var(torch.zeros(cost.size()))
-        l_f_meta = torch.sum(cost * eps)
+        loss = loss_fn(y_f_hat, labels, reduce=False)
+        eps = to_var(torch.zeros(loss.size()))
+        l_f_meta = torch.sum(loss * eps)
 
         meta_net.zero_grad()
         
@@ -202,7 +193,7 @@ def train_lre(dl, repeat=0):  # dl is a data_loader from a call to get_mnist_loa
         # Line 8 - 10 2nd forward pass and getting the gradients with respect to epsilon
         y_g_hat = meta_net(val_data)
 
-        l_g_meta = F.binary_cross_entropy_with_logits(y_g_hat,val_labels)
+        l_g_meta = loss_fn(y_g_hat, val_labels)
 
         grad_eps = torch.autograd.grad(l_g_meta, eps, only_inputs=True)[0]
         
@@ -218,8 +209,8 @@ def train_lre(dl, repeat=0):  # dl is a data_loader from a call to get_mnist_loa
         # Lines 12 - 14 computing for the loss with the computed weights
         # and then perform a parameter update
         y_f_hat = net(image)
-        cost = F.binary_cross_entropy_with_logits(y_f_hat, labels, reduce=False)
-        l_f = torch.sum(cost * w)
+        loss = loss_fn(y_f_hat, labels, reduce=False)
+        l_f = torch.sum(loss * w)
 
         opt.zero_grad()
         l_f.backward()
@@ -264,51 +255,56 @@ def train_lre(dl, repeat=0):  # dl is a data_loader from a call to get_mnist_loa
 
     if not os.path.exists(dn):
         os.makedirs(dn)
+    fn = '{}/lre-p{}-i{}.pdf'.format(dn, p, repeat)  # filename for plotting results
     fig.savefig(fn)
     plt.suptitle('LRE with p {} repeat {}'.format(p, repeat))
     plt.close(fig)
     print('done training LRE with p {} repeat {}; see plot at '.format(p, repeat))
     print(fn)
-
            
-        # return accuracy
     return np.mean(acc_log[-6:-1, 1])
 
+if __name__ == '__main__':
 
-# To get an idea of how robust this method is with respect to the proportion of the dominant class, I varied the proportion from 0.9 to 0.995 and perform 5 runs for each. 
+    # To get an idea of how robust this method is with respect to the proportion of the dominant class, I varied the proportion from 0.9 to 0.995 and perform 5 runs for each. 
+    accuracy_log = {fn.__name__: {} for fn in [train_baseline, train_lre]}
 
-# In[10]:
-
-
-num_repeats = 5
-proportions = [0.9,0.95, 0.98, 0.99, 0.995]
-accuracy_log = {}
-
-for prop in proportions:
-    data_loader = get_mnist_loader(hyperparameters['batch_size'], classes=[9, 4], proportion=prop, mode="train")
-    
-    for k in range(num_repeats):
-        accuracy = train_lre(data_loader, k)
-        
-        if prop in accuracy_log:
-            accuracy_log[prop].append(accuracy)
-        else:
-            accuracy_log[prop] = [accuracy]
-
-plt.figure(figsize=(10,8))
-for prop in proportions:
-    accuracies = accuracy_log[prop]
-    plt.scatter([prop] * len(accuracies), accuracies)
-
-# plot the trend line with error bars that correspond to standard deviation
-accuracies_mean = np.array([np.mean(v) for k,v in sorted(accuracy_log.items())])
-accuracies_std = np.array([np.std(v) for k,v in sorted(accuracy_log.items())])
-plt.errorbar(proportions, accuracies_mean, yerr=accuracies_std)
-plt.title('Performance on varying class proportions')
-plt.xlabel('proportions')
-plt.ylabel('Accuracy')
-plt.savefit('./plots/sweep.pdf')
-#plt.show()
+    for train_fn in [train_baseline, train_lre]:
+        print('starting sweep with', train_fn.__name__)
+        for prop in hyperparameters['proportions']:
+            for k in range(hyperparameters['num_repeats']):
+                accuracy = train_fn(prop, k)
+                
+                if prop in accuracy_log[train_fn.__name__]:
+                    accuracy_log[train_fn.__name__][prop].append(accuracy)
+                else:
+                    accuracy_log[train_fn.__name__][prop] = [accuracy]
 
 
-# We can see that even at 0.995 proportion of the dominant class in the training data, the model still reaches 90+% accuracy on the balanced test data.
+    with open('./plots/accuracy_log.json', 'w') as f:
+        json.dump(accuracy_log, f)
+        print('saved sweep accuracies to disk at', f.name)
+
+    # plot baseline
+    fig, a = plt.subplots(2, figsize=(10, 8))
+    for i, (train_fn_name, acc_log) in enumerate(accuracy_log.items()):
+        for prop in hyperparameters['proportions']:
+            accuracies = acc_log[prop]
+            a[i].scatter([prop] * len(accuracies), accuracies)
+
+        # plot the trend line with error bars that correspond to standard deviation
+        accuracies_mean = np.array([np.mean(v) for k,v in sorted(acc_log.items())])
+        accuracies_std = np.array([np.std(v) for k,v in sorted(acc_log.items())])
+        a[i].errorbar(hyperparameters['proportions'], accuracies_mean, yerr=accuracies_std)
+        a[i].set_title(train_fn_name)
+        a[i].set_xlabel('proportions')
+        a[i].set_ylabel('Accuracy')
+        a[i].set_ylim([0.7, 1.0])
+
+    plt.tight_layout()
+    fn = './plots/sweep.pdf'
+    plt.savefig(fn)
+    print('saved sweep plots to disk at', fn)
+    plt.close(fig)
+
+    # We can see that even at 0.995 proportion of the dominant class in the training data, the model still reaches 90+% accuracy on the balanced test data.

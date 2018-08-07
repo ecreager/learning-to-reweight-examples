@@ -265,8 +265,7 @@ if __name__ == '__main__':
     # To get an idea of how robust this method is with respect to the proportion of the dominant class, I varied the proportion from 0.9 to 0.995 and perform 5 runs for each. 
     accuracy_log = {fn.__name__: {} for fn in [train_baseline, train_lre]}
 
-    for train_fn in [train_lre]:
-    #for train_fn in [train_baseline, train_lre]:
+    for train_fn in [train_baseline, train_lre]:
         print('starting sweep with', train_fn.__name__)
         for prop in hyperparameters['proportions']:
             for k in range(hyperparameters['num_repeats']):

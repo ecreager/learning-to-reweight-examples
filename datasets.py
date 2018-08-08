@@ -5,6 +5,8 @@ import torch
 import torch.utils.data as data
 import torchvision
 
+from viz import grid
+
 
 class UCIAdult(data.Dataset):
     """UCI Adult dataset: https://archive.ics.uci.edu/ml/datasets/adult
@@ -131,22 +133,124 @@ def adult(batch_size, seed=None, gold_std=False):
 
     return train_loader, test_loader
 
+
+class CelebA(torchvision.datasets.ImageFolder):
+    celeba_dirname  = '/scratch/gobi1/datasets/celeb-a'
+    eval_partition_filename = '/scratch/gobi1/datasets/celeb-a/list_eval_partition.csv'
+    attr_filename = '/scratch/gobi1/datasets/celeb-a/list_attr_celeba.csv'
+
+    def __init__(self, train=True, **kwargs):
+        from datetime import datetime
+        import pandas as pd
+        t = datetime.now()
+        print('loading CelebA data')
+        super(CelebA, self).__init__(self.celeba_dirname, **kwargs)
+        print('done; it took {} secs'.format(datetime.now() - t))
+        self.eval_partition = pd.read_csv(self.eval_partition_filename)
+        self.attr = pd.read_csv(self.attr_filename)
+        self.attr = self.attr * (self.attr > 0)  # {-1, 1} -> {0, 1}
+        self.train = train  # training set or test set; NB validation set currently not supported
+
+        self.train_range = self._get_range(self.eval_partition, 0)
+        self.valid_range = self._get_range(self.eval_partition, 1)
+        self.test_range = self._get_range(self.eval_partition, 2)
+
+        if self.train:
+            del self.samples[self.test_range[0]:self.test_range[1]]
+            del self.imgs[self.test_range[0]:self.test_range[1]]
+            del self.samples[self.valid_range[0]:self.valid_range[1]]
+            del self.imgs[self.valid_range[0]:self.valid_range[1]]
+            self.attr = self.attr.loc[self.train_range[0]:self.train_range[1]].reset_index()
+        else:
+            del self.samples[self.train_range[0]:self.valid_range[1]]
+            del self.imgs[self.train_range[0]:self.valid_range[1]]
+            self.attr = self.attr.loc[self.test_range[0]:self.test_range[1]].reset_index()
+
+        from collections import OrderedDict
+        self.idx_to_attr = OrderedDict({i: self.attr.columns[i+2] for i in range(40)})
+
+    def __getitem__(self, index):
+        img, fake_label = super(CelebA, self).__getitem__(index)
+        attrs = [self.attr[self.idx_to_attr[j]].__getitem__(index) for j in range(40)]
+        return img, torch.tensor(attrs, dtype=torch.int64)
+
+    @staticmethod
+    def _get_range(df, partition_val):  
+        """partition val in {0, 1, 2} represents {train, valid, test}"""
+        min_idx = df['partition'][df['partition'] == partition_val].index.min()
+        max_idx = df['partition'][df['partition'] == partition_val].index.max()
+        return min_idx, max_idx
+
+    def _attrs_to_str(self, list_of_int_attrs):
+        s = ''
+        for i in range(40):
+            s += '\n{} = {}'.format(self.idx_to_attr[i], list_of_int_attrs[i])
+        return s
+
+
+def celeba(batch_size, seed=None):  # TODO: CelebAGoldStd
+    use_cuda = torch.cuda.is_available()
+    if seed is not None:
+        torch.manual_seed(seed)
+    device = torch.device("cuda" if use_cuda else "cpu")
+
+    #kwargs = {'num_workers': 1, 'pin_memory': True} if use_cuda else {}
+    kwargs = {'num_workers': 0, 'pin_memory': True} if use_cuda else {}
+
+    #transform = None
+    transform = torchvision.transforms.Compose([
+        #torchvision.transforms.Grayscale(),  
+        #transforms.Lambda(lambda x: x/255.),
+        torchvision.transforms.ToTensor()])
+    train_loader = torch.utils.data.DataLoader(
+            CelebA(train=True, transform=transform),  
+            batch_size=batch_size, 
+            shuffle=True, 
+            **kwargs)
+
+    test_loader = torch.utils.data.DataLoader(
+            CelebA(train=False, transform=transform),  
+            batch_size=batch_size, 
+            shuffle=True, 
+            **kwargs)
+
+    return train_loader, test_loader
+
+
 if __name__ == '__main__':
-    GOLD_STD = True
+    if False:  # test uci adult
+        GOLD_STD = True
 
-    train_loader, test_loader = adult(128, gold_std=GOLD_STD)
-    print('gold standard uci adult dataset' if GOLD_STD else 'uci adult dataset')
+        train_loader, test_loader = adult(128, gold_std=GOLD_STD)
+        print('gold standard uci adult dataset' if GOLD_STD else 'uci adult dataset')
 
-    for loader in [train_loader, test_loader]:
-        print()
-        print('training data' if loader.dataset.train else 'test data')
-        for batch_idx, (x, a, y) in enumerate(loader):
-            if batch_idx >= 1:
-                break
-            x, a, y = x.cuda(), a.cuda(), y.cuda()
-            print('x', x)
-            print('a', a)
-            print('y', y)
-            print('x a y shapes', x.shape, a.shape, y.shape)
+        for loader in [train_loader, test_loader]:
+            print()
+            print('training data' if loader.dataset.train else 'test data')
+            for batch_idx, (x, a, y) in enumerate(loader):
+                if batch_idx >= 1:
+                    break
+                x, a, y = x.cuda(), a.cuda(), y.cuda()
+                print('x', x)
+                print('a', a)
+                print('y', y)
+                print('x a y shapes', x.shape, a.shape, y.shape)
 
-    print('done')
+        print('done')
+    else:  # test celeba
+        train_loader, test_loader = celeba(128)
+        for loader in [train_loader, test_loader]:
+            print()
+            print('training data' if loader.dataset.train else 'test data')
+            for batch_idx, (x, y) in enumerate(loader):
+                print(x.__class__, y.__class__)
+                if batch_idx >= 1:
+                    break
+                x, y = x.cuda(), y.cuda()
+                print('x', x)
+                print('y', y)
+                print('x y shapes', x.shape, y.shape)
+                name = 'celeba-train' if loader.dataset.train else 'celeba-test'
+                print(grid(x[:16], name))
+
+          

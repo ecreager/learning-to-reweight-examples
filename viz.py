@@ -1,4 +1,5 @@
 import numpy as np
+import os
 
 
 def curves(train, test, eval_every=50, basename='curves', dirname='./plots'):
@@ -27,7 +28,30 @@ def curves(train, test, eval_every=50, basename='curves', dirname='./plots'):
     f.savefig(fn)
     plt.close(fn)
     return fn
-    
+
+
+def grid(batch_of_imgs, name='celebs', title='', plots_dir='./plots'):
+    import torchvision
+    import matplotlib
+    matplotlib.use('Agg')
+    import matplotlib.pyplot as plt
+
+    if not os.path.exists(plots_dir):
+        os.makedirs(plots_dir)
+    fn = '{}/{}.pdf'.format(plots_dir, name)
+
+    grid = torchvision.utils.make_grid(batch_of_imgs)
+    npimg = grid.detach().cpu().numpy()
+
+    fig, a = plt.subplots()
+    im = a.imshow(np.transpose(npimg, (1, 2, 0)))
+    a.set_title(title)
+    #fig.colorbar(im, ax=a)
+    fig.savefig(fn)
+    plt.close(fig)
+
+    return fn
+
 
 
 if __name__ == '__main__':

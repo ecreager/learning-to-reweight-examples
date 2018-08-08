@@ -17,17 +17,17 @@ from viz import curves
 # specify whether to train on sensitive attr
 ## either x -> y or x, a -> y
 
-
 def train_unfair_classifier(
         use_attr, 
         n_epochs,
         batch_size, 
         learning_rate,
         layer_specs,
+        lambda_fair,
         dirname='./fairness'):
 
     hp = dict(use_attr=use_attr, n_epochs=n_epochs, batch_size=batch_size,
-            learning_rate=learning_rate, layer_specs=layer_specs)
+            learning_rate=learning_rate, layer_specs=layer_specs, lambda_fair=lambda_fair)
     if not os.path.exists(dirname):
         os.makedirs(dirname)
     with open('{}/opt.json'.format(dirname), 'w') as f:
@@ -86,7 +86,7 @@ def train_unfair_classifier(
                     _, y_hat = torch.max(y_logit, 1)
                     z = n_group_0.type(torch.float32)
                     di = _disparate_impact(y_hat, a)
-                    loss = loss_fn(y_logit, y)
+                    loss = loss_fn(y_logit, y) + lambda_fair*_disparate_impact(torch.sigmoid(y_logit), a)
                     loss_per_batch.append(_np(loss))
                     di_per_batch.append(di)
                     correct += (y_hat == y).sum().item()
@@ -108,7 +108,7 @@ def train_unfair_classifier(
             y_logit = model(x)
             _, y_hat = torch.max(y_logit, 1)
             di = _disparate_impact(y_hat, a)
-            loss = loss_fn(y_logit, y)
+            loss = loss_fn(y_logit, y) + lambda_fair*_disparate_impact(torch.sigmoid(y_logit), a)
             loss_per_batch.append(_np(loss))
             di_per_batch.append(di)
             correct += (y_hat == y).sum().item()
@@ -128,8 +128,21 @@ def train_unfair_classifier(
         train_accuracy = 100. * correct / total
         print('train', e, avg_loss, train_accuracy, avg_di)
 
-    # PLOT RESULT
-    print(curves(
+    # save metrics from final iteration
+    final_metrics = dict(
+            train_loss=train_loss_per_epoch[-1].item(),
+            train_acc=train_acc_per_epoch[-1],
+            train_di=train_di_per_epoch[-1].item(),
+            test_loss=test_loss_per_k_epochs[-1].item(),
+            test_acc=test_acc_per_k_epochs[-1],
+            test_di=test_di_per_k_epochs[-1].item())
+
+    with open('{}/final_metrics.json'.format(dirname), 'w') as f:
+        json.dump(final_metrics, f)
+        print('saved final metrics to disk at', f.name)
+
+    # plot result
+    return(curves(
         (train_loss_per_epoch, train_acc_per_epoch, train_di_per_epoch),
         (test_loss_per_k_epochs, test_acc_per_k_epochs, test_di_per_k_epochs),
         eval_every,
@@ -144,8 +157,12 @@ if __name__ == '__main__':
         batch_size=64,
         learning_rate=1e-3,
         layer_specs=[8, 8, 8, 2],  # number of classes = 2
+        lambda_fair=50.,
         dirname='./fairness/unfair_classifier'
         )
+    if hyperparameters['lambda_fair'] > 0:
+        hyperparameters.update(dirname='./fairness/regularized_fair_classifier_{}'.format(hyperparameters['lambda_fair']))
+
     print( train_unfair_classifier(**hyperparameters) )
 
 1/0

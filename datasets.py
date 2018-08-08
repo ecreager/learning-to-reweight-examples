@@ -78,28 +78,58 @@ class UCIAdult(data.Dataset):
         dat = dict(np.load(self.data_filename))
 
         if self.train:
-            self.train_labels = torch.tensor(np.argmax(dat['y_train'], axis=1), dtype=torch.int64)
-            self.train_attr = torch.tensor(dat['attr_train'].squeeze(), dtype=torch.int64)  # sensitive attribute
-            self.train_data = torch.tensor(dat['x_train'], dtype=torch.float32)
+            self.train_labels = torch.tensor(np.argmax(dat['y_train'], axis=1), dtype=torch.long)
+            self.train_attr = torch.tensor(dat['attr_train'].squeeze(), dtype=torch.long)  # sensitive attribute
+            self.train_data = torch.tensor(dat['x_train'], dtype=torch.float)
             if self.use_attr:
                 self.train_data = torch.cat(
-                        (self.train_data, self.train_attr.type(torch.float32)[:, None]), 
+                        (self.train_data, self.train_attr.type(torch.float)[:, None]), 
                         dim=1)
         else:
-            self.test_labels = torch.tensor(np.argmax(dat['y_test'], axis=1), dtype=torch.int64)
-            self.test_attr = torch.tensor(dat['attr_test'].squeeze(), dtype=torch.int64)  # sensitive attribute
-            self.test_data = torch.tensor(dat['x_test'], dtype=torch.float32)
+            self.test_labels = torch.tensor(np.argmax(dat['y_test'], axis=1), dtype=torch.long)
+            self.test_attr = torch.tensor(dat['attr_test'].squeeze(), dtype=torch.long)  # sensitive attribute
+            self.test_data = torch.tensor(dat['x_test'], dtype=torch.float)
             if self.use_attr:
                 self.test_data = torch.cat(
-                        (self.test_data, self.test_attr.type(torch.float32)[:, None]), 
+                        (self.test_data, self.test_attr.type(torch.float)[:, None]), 
                         dim=1)
+
 
 class UCIAdultGoldStd(UCIAdult):
     """
     like UCIAdult, except the training data is missing the sensitive attribute
-    
     self.train_attr is still accessible but attr is omitted when iterated over
+    self.valid_* contain the gold std validation set
     """
+    def __init__(self, root, *args, n_val=5, **kwargs):
+        if 'use_attr' in kwargs.keys():
+            kwargs.update(use_attr=False)
+        super(UCIAdultGoldStd, self).__init__(root, *args, **kwargs)
+        self.n_val = n_val
+        # build "gold std" validation set of n_val examples from each (A, Y) combination
+        if self.train:
+            data, attr, labels = self.train_data, self.train_attr, self.train_labels
+        else:
+            data, attr, labels = self.test_data, self.test_attr, self.test_labels
+
+        # map (A, Y) to indices where a=A, y=Y
+        inds = {(i, j): (attr == i) * (labels == j) for i in range(2) for j in range(2)} 
+
+        # data, attr, label for each subgroup
+        xIay = {k: data[v, :] for k, v in inds.items()}
+        aIay = {k: attr[v] for k, v in inds.items()}
+        yIay = {k: attr[v] for k, v in inds.items()}
+        for k in inds.keys():
+            assert len(xIay[k]) >= n_val, 'too few examples to make validation set'
+            assert len(aIay[k]) >= n_val, 'too few examples to make validation set'
+            assert len(yIay[k]) >= n_val, 'too few examples to make validation set'
+            xIay[k] = xIay[k][:n_val, :]
+            aIay[k] = aIay[k][:n_val]
+            yIay[k] = yIay[k][:n_val]
+        self.valid_data = torch.cat([v for v in xIay.values()], dim=0)
+        self.valid_attr = torch.cat([v for v in aIay.values()], dim=0)
+        self.valid_labels = torch.cat([v for v in yIay.values()], dim=0)
+
     def __getitem__(self, index):
         inp, attr, target = super(UCIAdultGoldStd, self).__getitem__(index)
         if self.train:
@@ -108,7 +138,7 @@ class UCIAdultGoldStd(UCIAdult):
             return inp, attr, target
 
 
-def adult(batch_size, seed=None, gold_std=False):
+def adult(batch_size, seed=None, gold_std=False, n_val=5):
     use_cuda = torch.cuda.is_available()
     if seed is not None:
         torch.manual_seed(seed)
@@ -117,16 +147,17 @@ def adult(batch_size, seed=None, gold_std=False):
     #kwargs = {'num_workers': 1, 'pin_memory': True} if use_cuda else {}
     kwargs = {'num_workers': 0, 'pin_memory': True} if use_cuda else {}
     dataset = UCIAdultGoldStd if gold_std else UCIAdult
+    dataset_kwargs = {'n_val': n_val} if gold_std else {}
 
     transform = None
     train_loader = torch.utils.data.DataLoader(
-            dataset('./data', train=True, download=True, transform=transform, use_attr=False),  
+            dataset('./data', train=True, download=True, transform=transform, use_attr=False, **dataset_kwargs),  
             batch_size=batch_size, 
             shuffle=True, 
             **kwargs)
 
     test_loader = torch.utils.data.DataLoader(
-            dataset('./data', train=False, download=True, transform=transform, use_attr=False),  
+            dataset('./data', train=False, download=True, transform=transform, use_attr=False, **dataset_kwargs),  
             batch_size=batch_size, 
             shuffle=True, 
             **kwargs)
@@ -172,7 +203,7 @@ class CelebA(torchvision.datasets.ImageFolder):
     def __getitem__(self, index):
         img, fake_label = super(CelebA, self).__getitem__(index)
         attrs = [self.attr[self.idx_to_attr[j]].__getitem__(index) for j in range(40)]
-        return img, torch.tensor(attrs, dtype=torch.int64)
+        return img, torch.tensor(attrs, dtype=torch.long)
 
     @staticmethod
     def _get_range(df, partition_val):  
@@ -218,7 +249,7 @@ def celeba(batch_size, seed=None):  # TODO: CelebAGoldStd
 
 
 if __name__ == '__main__':
-    if False:  # test uci adult
+    if True:  # test uci adult
         GOLD_STD = True
 
         train_loader, test_loader = adult(128, gold_std=GOLD_STD)

@@ -1,1 +1,1 @@
-:map <F5> :wa \| :!python datasets.py <CR>
+:map <F5> :wa \| :!python guess_a.py <CR>

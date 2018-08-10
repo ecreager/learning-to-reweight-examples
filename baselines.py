@@ -5,36 +5,34 @@ import torch
 import torch.optim as optim
 
 from datasets import adult
+from utils import disparate_impact
 from viz import curves
 
 # TODO
-# * plot results
 # * json stats
-# * validation splits
 # * compare baseline numbers for X->Y and X,A->Y
 
 
-# specify whether to train on sensitive attr
-## either x -> y or x, a -> y
-
-def train_unfair_classifier(
-        use_attr, 
+def train_fair_classifier(
+        train_loader,
+        test_loader,
         n_epochs,
-        batch_size, 
         learning_rate,
         layer_specs,
         lambda_fair,
-        dirname='./fairness'):
+        guesser=None,
+        dirname='./fairness',
+        eval_every=50):
 
-    hp = dict(use_attr=use_attr, n_epochs=n_epochs, batch_size=batch_size,
-            learning_rate=learning_rate, layer_specs=layer_specs, lambda_fair=lambda_fair)
+    hp = dict(n_epochs=n_epochs, 
+            learning_rate=learning_rate, layer_specs=layer_specs, lambda_fair=lambda_fair, guesser=str(guesser))
     if not os.path.exists(dirname):
         os.makedirs(dirname)
     with open('{}/opt.json'.format(dirname), 'w') as f:
         json.dump(hp, f)
 
-    # make uci train and test loaders
-    train_loader, test_loader = adult(batch_size)
+    if guesser is not None:
+        assert not train_loader.dataset.use_attr, 'cant have A in X when using a guesser'
 
     n_in = train_loader.dataset.train_data.shape[1]
     layer_specs.insert(0, n_in)
@@ -51,69 +49,74 @@ def train_unfair_classifier(
 
     _np = lambda t: t.detach().cpu().numpy()
 
-    def _disparate_impact(y_hat, a):
-        """disparate impact according to demographic parity"""
-        return abs(torch.sub(
-            y_hat[a == 0].type(torch.float32).mean(),
-            y_hat[a == 1].type(torch.float32).mean()))
-
     # init optimizer
     optimizer = optim.Adam(list(model.parameters()), lr=learning_rate)
 
-    # train
     ## measure loss, accuracy, demographic parity for {train, test} every k iters
-    ## write to json-formatted log file
     train_loss_per_epoch = []
     train_acc_per_epoch = []
     train_di_per_epoch = []
     test_loss_per_k_epochs = []
     test_acc_per_k_epochs = []
     test_di_per_k_epochs = []
-    eval_every = 50
 
     for e in range(n_epochs):
         if e % eval_every == 0:
             # evaluate loss, accuracy, fairness on test data
             loss_per_batch = []
             di_per_batch = []
+            if guesser is not None:
+                valid_di_per_batch = []
             correct = 0
             total = 0
             with torch.no_grad():
                 for i, (x, a, y) in enumerate(test_loader):
                     x, a, y = x.cuda(), a.cuda(), y.cuda()
-                    n_group_0, n_group_1 = (1- a).sum(), a.sum()
                     y_logit = model(x)
                     _, y_hat = torch.max(y_logit, 1)
-                    z = n_group_0.type(torch.float32)
-                    di = _disparate_impact(y_hat, a)
-                    loss = loss_fn(y_logit, y) + lambda_fair*_disparate_impact(torch.sigmoid(y_logit), a)
+                    p_y0 = torch.sigmoid(y_logit)[:, 0]
+                    di = disparate_impact(y_logit, a, train=False)
+                    loss = loss_fn(y_logit, y) + lambda_fair*di
                     loss_per_batch.append(_np(loss))
                     di_per_batch.append(di)
                     correct += (y_hat == y).sum().item()
                     total += len(y)
+                    if guesser is not None:  # how are we doing on the data we used to train X -> A?
+                        valid_di = disparate_impact(model(train_loader.dataset.valid_data.cuda()), train_loader.dataset.valid_attr.cuda(), train=False)
+                        valid_di_per_batch.append(valid_di)
             test_accuracy = 100. * correct / total
             avg_loss = np.mean(loss_per_batch)
             test_loss_per_k_epochs.append(avg_loss)
             avg_di = np.mean(di_per_batch)
             test_di_per_k_epochs.append(avg_di)
             test_acc_per_k_epochs.append(test_accuracy)
-            print('test', e, avg_loss, test_accuracy, avg_di)
+            print('test', e, avg_loss, test_accuracy, avg_di, np.mean(valid_di_per_batch) if guesser is not None else '')
 
+        # train
         loss_per_batch = []
+        di_per_batch = []
+        if guesser is not None:
+            valid_di_per_batch = []
         correct = 0
         total = 0
         for i, (x, a, y) in enumerate(train_loader):
             optimizer.zero_grad()
             x, a, y = x.cuda(), a.cuda(), y.cuda()
+            if guesser is not None:  # guessing the sensitive attribute
+                a = guesser(x).argmax(dim=1)
             y_logit = model(x)
             _, y_hat = torch.max(y_logit, 1)
-            di = _disparate_impact(y_hat, a)
-            loss = loss_fn(y_logit, y) + lambda_fair*_disparate_impact(torch.sigmoid(y_logit), a)
+            di = disparate_impact(y_logit, a, train=True)
+            loss = loss_fn(y_logit, y) + lambda_fair*di
             loss_per_batch.append(_np(loss))
-            di_per_batch.append(di)
+            di_per_batch.append(_np(di))
             correct += (y_hat == y).sum().item()
             total += len(y)
-
+            if guesser is not None:  # how are we doing on the data we used to train X -> A?
+                _, ahat = torch.max(guesser(train_loader.dataset.valid_data.cuda()), 1)
+                _, yhat = torch.max(model(train_loader.dataset.valid_data.cuda()), 1)
+                valid_di = disparate_impact(model(train_loader.dataset.valid_data.cuda()), train_loader.dataset.valid_attr.cuda(), train=True)
+                valid_di_per_batch.append(_np(valid_di))
             # optimize
             loss.backward()
             optimizer.step()
@@ -126,7 +129,7 @@ def train_unfair_classifier(
         train_acc_per_epoch.append(train_accuracy)
         train_di_per_epoch.append(avg_di)
         train_accuracy = 100. * correct / total
-        print('train', e, avg_loss, train_accuracy, avg_di)
+        print('train', e, avg_loss, train_accuracy, avg_di, np.mean(valid_di_per_batch) if guesser is not None else '')
 
     # save metrics from final iteration
     final_metrics = dict(
@@ -146,23 +149,46 @@ def train_unfair_classifier(
         (train_loss_per_epoch, train_acc_per_epoch, train_di_per_epoch),
         (test_loss_per_k_epochs, test_acc_per_k_epochs, test_di_per_k_epochs),
         eval_every,
-        dirname=dirname))
+        dirname=dirname,
+        ylim=[80., 100.]))
 
 
 if __name__ == '__main__':
-    from collections import OrderedDict
-    hyperparameters = OrderedDict(
-        use_attr=False,
-        n_epochs=int(1e3),
-        batch_size=64,
+    data_hyperparameters = dict(
+            n_val=5,  # you get n_val from each (A, Y) combo so total valid set size is 4*n_val
+            seed=None,
+            batch_size=64,
+            )
+    GOLD_STD = True
+    train_loader, test_loader = adult(gold_std=GOLD_STD, **data_hyperparameters)
+
+    # model hyperparams
+    hyperparameters = dict(
+        n_epochs=int(1.5e2),
         learning_rate=1e-3,
-        layer_specs=[8, 8, 8, 2],  # number of classes = 2
-        lambda_fair=50.,
-        dirname='./fairness/unfair_classifier'
+        #layer_specs=[8, 8, 8, 2],  # number of classes = 2
+        layer_specs=[2],  # number of classes = 2
+        lambda_fair=1.,
+        dirname='./fairness/unfair_classifier',
+        guess=GOLD_STD,
+        eval_every=10
         )
     if hyperparameters['lambda_fair'] > 0:
         hyperparameters.update(dirname='./fairness/regularized_fair_classifier_{}'.format(hyperparameters['lambda_fair']))
 
-    print( train_unfair_classifier(**hyperparameters) )
+    if hyperparameters.pop('guess'):
+        print('training guesser A -> X using gold std data')
+        hyperparameters['dirname'] += '_guesser-nv{}'.format(data_hyperparameters['n_val'])
+        from guess_a import train_guesser
+        guesser_hyperparameters = dict(
+                lr=1e-3,
+                momentum=0.9,
+                num_iterations=8000,
+                model='linear')
+        hyperparameters['guesser'] = train_guesser(train_loader, test_loader, **guesser_hyperparameters)
+
+    from pprint import pprint
+    pprint(hyperparameters)
+    print( train_fair_classifier(train_loader, test_loader, **hyperparameters) )
 
 1/0

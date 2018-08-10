@@ -2,7 +2,7 @@ import numpy as np
 import os
 
 
-def curves(train, test, eval_every=50, basename='curves', dirname='./plots'):
+def curves(train, test, eval_every=50, basename='curves', dirname='./plots', ylim=None):
     import matplotlib
     matplotlib.use('Agg')
     import matplotlib.pyplot as plt
@@ -19,6 +19,8 @@ def curves(train, test, eval_every=50, basename='curves', dirname='./plots'):
 
     a[0].set_ylabel('loss')
     a[1].set_ylabel('acc')
+    if ylim is not None:
+        a[1].set_ylim(ylim)
     a[2].set_ylabel('disp imp')
     for aa in a:
         aa.legend()

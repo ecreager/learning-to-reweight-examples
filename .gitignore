@@ -2,3 +2,4 @@ fairness/*
 plots/*
 data/*
 __pycache__/*
+*.pyc

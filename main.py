@@ -63,7 +63,6 @@ def train_baseline(p, repeat=0):
     data_loader = get_mnist_loader(hyperparameters['batch_size'], classes=[9, 4], proportion=p, mode="train")
     val_data = to_var(data_loader.dataset.data_val, requires_grad=False)
     val_labels = to_var(data_loader.dataset.labels_val, requires_grad=False)
-
     net, opt = build_model()
 
     net_losses = []
@@ -184,6 +183,8 @@ def train_lre(p, repeat=0):
         
         # Line 6 perform a parameter update
         grads = torch.autograd.grad(l_f_meta, (meta_net.params()), create_graph=True)
+        #print(grads)
+        #1/0
         meta_net.update_params(hyperparameters['lr'], source_params=grads)
         
         # Line 8 - 10 2nd forward pass and getting the gradients with respect to epsilon
@@ -192,6 +193,8 @@ def train_lre(p, repeat=0):
         l_g_meta = F.binary_cross_entropy_with_logits(y_g_hat, val_labels)
 
         grad_eps = torch.autograd.grad(l_g_meta, eps, only_inputs=True)[0]
+        print(grad_eps)
+        1/0
         
         # Line 11 computing and normalizing the weights
         w_tilde = torch.clamp(-grad_eps,min=0)
@@ -265,7 +268,8 @@ if __name__ == '__main__':
     # To get an idea of how robust this method is with respect to the proportion of the dominant class, I varied the proportion from 0.9 to 0.995 and perform 5 runs for each. 
     accuracy_log = {fn.__name__: {} for fn in [train_baseline, train_lre]}
 
-    for train_fn in [train_baseline, train_lre]:
+    #for train_fn in [train_baseline, train_lre]:
+    for train_fn in [train_lre]:
         print('starting sweep with', train_fn.__name__)
         for prop in hyperparameters['proportions']:
             for k in range(hyperparameters['num_repeats']):
@@ -282,20 +286,21 @@ if __name__ == '__main__':
         print('saved sweep accuracies to disk at', f.name)
 
     # plot baseline
-    fig, a = plt.subplots(2, figsize=(10, 8))
+    colors = {0: 'b', 1: 'r'}
+    fig, a = plt.subplots(figsize=(10, 8))
     for i, (train_fn_name, acc_log) in enumerate(accuracy_log.items()):
         for prop in hyperparameters['proportions']:
             accuracies = acc_log[prop]
-            a[i].scatter([prop] * len(accuracies), accuracies)
+            a.scatter([prop] * len(accuracies), accuracies, c=colors[i])
 
         # plot the trend line with error bars that correspond to standard deviation
         accuracies_mean = np.array([np.mean(v) for k,v in sorted(acc_log.items())])
         accuracies_std = np.array([np.std(v) for k,v in sorted(acc_log.items())])
-        a[i].errorbar(hyperparameters['proportions'], accuracies_mean, yerr=accuracies_std)
-        a[i].set_title(train_fn_name)
-        a[i].set_xlabel('proportions')
-        a[i].set_ylabel('Accuracy')
-        a[i].set_ylim([0.7, 1.0])
+        a.errorbar(hyperparameters['proportions'], accuracies_mean, yerr=accuracies_std, label=train_fn_name)
+    a.legend()
+    a.set_title('{} vs. {}'.format(train_baseline.__name__, train_lre.__name__))
+    a.set_xlabel('proportions')
+    a.set_ylabel('Accuracy')
 
     plt.tight_layout()
     fn = './plots/sweep.pdf'

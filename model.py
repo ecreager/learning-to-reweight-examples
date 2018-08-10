@@ -213,6 +213,18 @@ class LeNet(MetaModule):
         x = x.view(-1, 120)
         return self.fc_layers(x).squeeze()
 
+class Simple(MetaModule):
+    def __init__(self, specs):
+        super(Simple, self).__init__()
+        layers = sum(
+                [[MetaLinear(specs[i], specs[i+1]), torch.nn.ReLU(inplace=True)] for i in range(len(specs)-1)], 
+                [])
+        layers.pop()  # remove final nonlinearity; final layer should be linear
+        self.layers = torch.nn.Sequential(*layers)
+
+    def forward(self, inputs):
+        return self.layers(inputs).squeeze()
+
 
 # class LeNet(MetaModule):
 #     def __init__(self, n_out):

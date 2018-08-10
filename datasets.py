@@ -138,7 +138,7 @@ class UCIAdultGoldStd(UCIAdult):
             return inp, attr, target
 
 
-def adult(batch_size, seed=None, gold_std=False, n_val=5):
+def adult(batch_size=64, seed=None, gold_std=False, n_val=5):
     use_cuda = torch.cuda.is_available()
     if seed is not None:
         torch.manual_seed(seed)

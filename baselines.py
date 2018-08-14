@@ -90,7 +90,8 @@ def train_fair_classifier(
             avg_di = np.mean(di_per_batch)
             test_di_per_k_epochs.append(avg_di)
             test_acc_per_k_epochs.append(test_accuracy)
-            print('test', e, avg_loss, test_accuracy, avg_di, np.mean(valid_di_per_batch) if guesser is not None else '')
+            #print('test', e, avg_loss, test_accuracy, avg_di, np.mean(valid_di_per_batch) if guesser is not None else '')
+            print('test', e, avg_loss, test_accuracy, avg_di)
 
         # train
         loss_per_batch = []
@@ -129,7 +130,8 @@ def train_fair_classifier(
         train_acc_per_epoch.append(train_accuracy)
         train_di_per_epoch.append(avg_di)
         train_accuracy = 100. * correct / total
-        print('train', e, avg_loss, train_accuracy, avg_di, np.mean(valid_di_per_batch) if guesser is not None else '')
+        #print('train', e, avg_loss, train_accuracy, avg_di, np.mean(valid_di_per_batch) if guesser is not None else '')
+        print('train', e, avg_loss, train_accuracy, avg_di)
 
     # save metrics from final iteration
     final_metrics = dict(
@@ -177,7 +179,7 @@ if __name__ == '__main__':
         hyperparameters.update(dirname='./fairness/regularized_fair_classifier_{}'.format(hyperparameters['lambda_fair']))
 
     if hyperparameters.pop('guess'):
-        print('training guesser A -> X using gold std data')
+        print('training guesser X -> A using gold std data')
         hyperparameters['dirname'] += '_guesser-nv{}'.format(data_hyperparameters['n_val'])
         from guess_a import train_guesser
         guesser_hyperparameters = dict(

@@ -56,6 +56,9 @@ def train_fair_classifier(
     train_loss_per_epoch = []
     train_acc_per_epoch = []
     train_di_per_epoch = []
+    valid_loss_per_k_epochs = []
+    valid_acc_per_k_epochs = []
+    valid_di_per_k_epochs = []
     test_loss_per_k_epochs = []
     test_acc_per_k_epochs = []
     test_di_per_k_epochs = []
@@ -65,11 +68,10 @@ def train_fair_classifier(
             # evaluate loss, accuracy, fairness on test data
             loss_per_batch = []
             di_per_batch = []
-            if guesser is not None:
-                valid_di_per_batch = []
             correct = 0
             total = 0
             with torch.no_grad():
+                # test metrics
                 for i, (x, a, y) in enumerate(test_loader):
                     x, a, y = x.cuda(), a.cuda(), y.cuda()
                     y_logit = model(x)
@@ -81,17 +83,25 @@ def train_fair_classifier(
                     di_per_batch.append(di)
                     correct += (y_hat == y).sum().item()
                     total += len(y)
-                    if guesser is not None:  # how are we doing on the data we used to train X -> A?
-                        valid_di = disparate_impact(model(train_loader.dataset.valid_data.cuda()), train_loader.dataset.valid_attr.cuda(), train=False)
-                        valid_di_per_batch.append(valid_di)
-            test_accuracy = 100. * correct / total
-            avg_loss = np.mean(loss_per_batch)
-            test_loss_per_k_epochs.append(avg_loss)
-            avg_di = np.mean(di_per_batch)
-            test_di_per_k_epochs.append(avg_di)
-            test_acc_per_k_epochs.append(test_accuracy)
-            #print('test', e, avg_loss, test_accuracy, avg_di, np.mean(valid_di_per_batch) if guesser is not None else '')
-            print('test', e, avg_loss, test_accuracy, avg_di)
+                test_accuracy = 100. * correct / total
+                avg_loss = np.mean(loss_per_batch)
+                test_loss_per_k_epochs.append(avg_loss)
+                avg_di = np.mean(di_per_batch)
+                test_di_per_k_epochs.append(avg_di)
+                test_acc_per_k_epochs.append(test_accuracy)
+                print('test', e, avg_loss, test_accuracy, avg_di)
+                # validation metrics
+                x, a, y = train_loader.dataset.valid_data, train_loader.dataset.valid_attr, train_loader.dataset.valid_attr
+                x, a, y = x.cuda(), a.cuda(), y.cuda()
+                y_logit = model(x)
+                valid_di = disparate_impact(y_logit, a, train=False)
+                valid_loss = loss_fn(y_logit, y) + lambda_fair*valid_di
+                valid_accuracy = 100. * (y_hat == y).sum().item() / len(y)
+                valid_di, valid_loss = valid_di.item(), valid_loss.item()
+                valid_loss_per_k_epochs.append(valid_loss)
+                valid_di_per_k_epochs.append(valid_di)
+                valid_acc_per_k_epochs.append(valid_accuracy)
+                print('valid', e, valid_loss, valid_accuracy, valid_di)
 
         # train
         loss_per_batch = []
@@ -113,11 +123,6 @@ def train_fair_classifier(
             di_per_batch.append(_np(di))
             correct += (y_hat == y).sum().item()
             total += len(y)
-            if guesser is not None:  # how are we doing on the data we used to train X -> A?
-                _, ahat = torch.max(guesser(train_loader.dataset.valid_data.cuda()), 1)
-                _, yhat = torch.max(model(train_loader.dataset.valid_data.cuda()), 1)
-                valid_di = disparate_impact(model(train_loader.dataset.valid_data.cuda()), train_loader.dataset.valid_attr.cuda(), train=True)
-                valid_di_per_batch.append(_np(valid_di))
             # optimize
             loss.backward()
             optimizer.step()
@@ -129,15 +134,30 @@ def train_fair_classifier(
         train_loss_per_epoch.append(avg_loss)
         train_acc_per_epoch.append(train_accuracy)
         train_di_per_epoch.append(avg_di)
-        train_accuracy = 100. * correct / total
-        #print('train', e, avg_loss, train_accuracy, avg_di, np.mean(valid_di_per_batch) if guesser is not None else '')
-        print('train', e, avg_loss, train_accuracy, avg_di)
+        # validation metrics
+        if guesser is not None:  # how are we doing on the data we used to train X -> A?
+            _, ahat = torch.max(guesser(train_loader.dataset.valid_data.cuda()), 1)
+            _, yhat = torch.max(model(train_loader.dataset.valid_data.cuda()), 1)
+            valid_di = disparate_impact(model(train_loader.dataset.valid_data.cuda()), train_loader.dataset.valid_attr.cuda(), train=True)
+            valid_loss = loss_fn(
+                    model(train_loader.dataset.valid_data.cuda()), 
+                    train_loader.dataset.valid_labels.cuda()) + lambda_fair*valid_di
+            valid_di, valid_loss = valid_di.item(), valid_loss.item()
+        print('train', e, avg_loss, train_accuracy, avg_di, 
+                'v' if guesser is not None else '',
+                valid_loss if guesser is not None else '',
+                valid_di if guesser is not None else '',
+                )
+        #print('train', e, avg_loss, train_accuracy, avg_di)
 
     # save metrics from final iteration
     final_metrics = dict(
             train_loss=train_loss_per_epoch[-1].item(),
             train_acc=train_acc_per_epoch[-1],
             train_di=train_di_per_epoch[-1].item(),
+            valid_loss=valid_loss_per_k_epochs[-1],
+            valid_acc=valid_acc_per_k_epochs[-1],
+            valid_di=valid_di_per_k_epochs[-1],
             test_loss=test_loss_per_k_epochs[-1].item(),
             test_acc=test_acc_per_k_epochs[-1],
             test_di=test_di_per_k_epochs[-1].item())
@@ -149,10 +169,11 @@ def train_fair_classifier(
     # plot result
     return(curves(
         (train_loss_per_epoch, train_acc_per_epoch, train_di_per_epoch),
+        (valid_loss_per_k_epochs, valid_acc_per_k_epochs, valid_di_per_k_epochs),
         (test_loss_per_k_epochs, test_acc_per_k_epochs, test_di_per_k_epochs),
         eval_every,
         dirname=dirname,
-        ylim=[80., 100.]))
+        ylim=[50., 100.]))
 
 
 if __name__ == '__main__':
@@ -166,10 +187,10 @@ if __name__ == '__main__':
 
     # model hyperparams
     hyperparameters = dict(
-        n_epochs=int(1.5e2),
+        n_epochs=int(1.e2),
         learning_rate=1e-3,
-        #layer_specs=[8, 8, 8, 2],  # number of classes = 2
-        layer_specs=[2],  # number of classes = 2
+        layer_specs=[8, 8, 8, 2],  # number of classes = 2
+        #layer_specs=[2],  # number of classes = 2
         lambda_fair=1.,
         dirname='./fairness/unfair_classifier',
         guess=GOLD_STD,

@@ -2,16 +2,16 @@ import numpy as np
 import os
 
 
-def curves(train, test, eval_every=50, basename='curves', dirname='./plots', ylim=None):
+def curves(train, valid, test, eval_every=50, basename='curves', dirname='./plots', ylim=None):
     import matplotlib
     matplotlib.use('Agg')
     import matplotlib.pyplot as plt
 
     f, a = plt.subplots(3)
-    for i, (name, vals) in enumerate(zip(['train', 'test'], [train, test])):
+    for i, (name, vals) in enumerate(zip(['train', 'valid', 'test'], [train, valid, test])):
         losses, accs, dis = vals
         idx = np.arange(len(losses))
-        if name == 'test':
+        if name in ['test', 'valid']:
             idx *= eval_every
         a[0].plot(idx, losses, label=name)
         a[1].plot(idx, accs, label=name)

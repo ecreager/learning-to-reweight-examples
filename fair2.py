@@ -10,6 +10,9 @@ from datasets import adult
 from utils import disparate_impact
 from viz import curves
 
+
+"""combine baseline guesser with gold standard example reweighting"""
+
 def train_meta_fair_classifier(
         train_loader,
         test_loader,
@@ -17,6 +20,7 @@ def train_meta_fair_classifier(
         learning_rate,
         layer_specs,
         lambda_fair,
+        guesser=None,
         dirname='./fairness',
         eval_every=50):
 
@@ -38,13 +42,17 @@ def train_meta_fair_classifier(
         o = optim.Adam(list(m.params()), lr=lr)
         return m, o
 
+
     print('training fair LRE with lambda ', lambda_fair)
-    hp = dict(n_epochs=n_epochs, learning_rate=learning_rate, layer_specs=layer_specs, lambda_fair=lambda_fair)
+    hp = dict(n_epochs=n_epochs, learning_rate=learning_rate, layer_specs=layer_specs, lambda_fair=lambda_fair, guesser=str(guesser))
     if not os.path.exists(dirname):
         os.makedirs(dirname)
     with open('{}/opt.json'.format(dirname), 'w') as f:
         json.dump(hp, f)
 
+    if guesser is None:
+        assert False, 'need a guesser for this script'
+    assert not train_loader.dataset.use_attr, 'cant have A in X when using a guesser'
 
     n_in = train_loader.dataset.train_data.shape[1]
     layer_specs.insert(0, n_in)
@@ -92,7 +100,7 @@ def train_meta_fair_classifier(
                     di = disparate_impact(y_logit, a, train=False)
                     loss = F.binary_cross_entropy_with_logits(y_logit, y.float()) + lambda_fair*di
                     loss_per_batch.append(_np(loss))
-                    di_per_batch.append(di)
+                    di_per_batch.append(_np(di))
                     correct += (y_hat.int() == y.int()).sum().item()
                     total += len(y)
                 test_accuracy = 100. * correct / total
@@ -122,10 +130,12 @@ def train_meta_fair_classifier(
         meta_loss_per_batch = []
         di_per_batch = []
         meta_di_per_batch = []
+        valid_di_per_batch = []
         correct = 0
         total = 0
-        for i, (x, a, y) in enumerate(train_loader):
-            x, a, y = x.cuda(), a.cuda(), y.cuda()
+        for i, (x, _, y) in enumerate(train_loader):
+            x, y = x.cuda(), y.cuda()
+            a = guesser(x).argmax(dim=1)
             meta_net = _model(layer_specs)
             meta_net.load_state_dict(net.state_dict())
 
@@ -134,7 +144,8 @@ def train_meta_fair_classifier(
 
             #y_f_logit  = meta_net(x).squeeze()
             y_f_logit  = meta_net(x)
-            loss = F.binary_cross_entropy_with_logits(y_f_logit, y.float(), reduce=False)
+            di = disparate_impact(y_f_logit, a, train=True)
+            loss = F.binary_cross_entropy_with_logits(y_f_logit, y.float(), reduce=False) + lambda_fair*di
             eps = Variable(torch.zeros(loss.size()), requires_grad=True).cuda()
             l_f_meta = torch.sum(loss * eps)
 
@@ -176,7 +187,8 @@ def train_meta_fair_classifier(
             # Lines 12 - 14 computing for the loss with the computed weights
             # and then perform a parameter update
             y_f_logit = net(x).squeeze()
-            loss = F.binary_cross_entropy_with_logits(y_f_logit, y.float(), reduce=False)
+            di = disparate_impact(y_f_logit, a, train=True)
+            loss = F.binary_cross_entropy_with_logits(y_f_logit, y.float(), reduce=False) + lambda_fair*di
             l_f = torch.sum(loss * w)
 
             opt.zero_grad()
@@ -185,18 +197,20 @@ def train_meta_fair_classifier(
 
             # TODO compute and store metrics
             loss_per_batch.append(l_f.item())
+            di_per_batch.append(_np(di))
             y_hat = y_f_logit > 0.
             correct += (y_hat.int() == y.int()).sum().item()
             total += len(y)
 
         train_accuracy = 100. * correct / total
         avg_loss = np.mean(loss_per_batch)
+        avg_di = np.mean(di_per_batch)
         avg_meta_loss = np.mean(meta_loss_per_batch)
         avg_meta_di = np.mean(meta_di_per_batch)
         train_loss_per_epoch.append(avg_loss)
         train_acc_per_epoch.append(train_accuracy)
         train_di_per_epoch.append(avg_di)
-        print('train', e, avg_loss, train_accuracy, 'm', avg_meta_loss, avg_meta_di)
+        print('train', e, avg_loss, train_accuracy, avg_di, 'm', avg_meta_loss, avg_meta_di)
 
     # save metrics from final iteration
     final_metrics = dict(
@@ -246,7 +260,18 @@ if __name__ == '__main__':
         eval_every=10
         )
     if hyperparameters['lambda_fair'] > 0:
-        hyperparameters.update(dirname='./fairness/meta_fair_classifier_{}'.format(hyperparameters['lambda_fair']))
+        hyperparameters.update(dirname='./fairness/meta_fair_classifier_{}_with_guesser'.format(hyperparameters['lambda_fair']))
+
+    print('training guesser X -> A using gold std data')
+    hyperparameters['dirname'] += '_guesser-nv{}'.format(data_hyperparameters['n_val'])
+    from guess_a import train_guesser
+    guesser_hyperparameters = dict(
+            lr=1e-3,
+            momentum=0.9,
+            num_iterations=8000,
+            model='linear')
+    hyperparameters['guesser'] = train_guesser(train_loader, test_loader, **guesser_hyperparameters)
+
 
     from pprint import pprint
     pprint(hyperparameters)
